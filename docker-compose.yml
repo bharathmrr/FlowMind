@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: flowmind_postgres
+    environment:
+      POSTGRES_DB: flowmind_db
+      POSTGRES_USER: flowmind_user
+      POSTGRES_PASSWORD: flowmind_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - flowmind_network
+
+  # Redis Cache & Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: flowmind_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - flowmind_network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowmind_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://flowmind_user:flowmind_password@postgres:5432/flowmind_db
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app
+      - ./logs:/app/logs
+    networks:
+      - flowmind_network
+    restart: unless-stopped
+
+  # Celery Worker for Background Tasks
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowmind_celery_worker
+    command: celery -A app.core.celery worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://flowmind_user:flowmind_password@postgres:5432/flowmind_db
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app
+      - ./logs:/app/logs
+    networks:
+      - flowmind_network
+    restart: unless-stopped
+
+  # Celery Beat Scheduler
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowmind_celery_beat
+    command: celery -A app.core.celery beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://flowmind_user:flowmind_password@postgres:5432/flowmind_db
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app
+      - ./logs:/app/logs
+    networks:
+      - flowmind_network
+    restart: unless-stopped
+
+  # Flower for Celery Monitoring
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flowmind_flower
+    command: celery -A app.core.celery flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://flowmind_user:flowmind_password@postgres:5432/flowmind_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - ./app:/app
+    networks:
+      - flowmind_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  flowmind_network:
+    driver: bridge
